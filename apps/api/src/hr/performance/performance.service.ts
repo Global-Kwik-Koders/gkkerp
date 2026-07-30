@@ -11,15 +11,24 @@ export class PerformanceService {
     private readonly deptNotifier: DeptNotifierService,
   ) {}
 
-  findAll(companyId: string, userId: string, role: string) {
+  findAll(
+    companyId: string,
+    userId: string,
+    role: string,
+    filters: { reviewee_id?: string; date_from?: string; date_to?: string } = {},
+  ) {
     const q = this.knex('performance_reviews as pr')
       .where('pr.company_id', companyId)
       .leftJoin('users as reviewer', 'pr.reviewer_id', 'reviewer.id')
       .leftJoin('users as reviewee', 'pr.reviewee_id', 'reviewee.id')
+      .leftJoin('departments as d', 'reviewee.department_id', 'd.id')
       .select(
         'pr.*',
         this.knex.raw("CONCAT(reviewer.first_name, ' ', reviewer.last_name) as reviewer_name"),
         this.knex.raw("CONCAT(reviewee.first_name, ' ', reviewee.last_name) as reviewee_name"),
+        'reviewee.avatar_url as reviewee_avatar',
+        'reviewee.job_title as reviewee_job_title',
+        'd.name as reviewee_department',
       )
       .orderBy('pr.created_at', 'desc');
 
@@ -28,6 +37,10 @@ export class PerformanceService {
         this.where('pr.reviewer_id', userId).orWhere('pr.reviewee_id', userId);
       });
     }
+
+    if (filters.reviewee_id) q.where('pr.reviewee_id', filters.reviewee_id);
+    if (filters.date_from)   q.where('pr.created_at', '>=', filters.date_from);
+    if (filters.date_to)     q.where('pr.created_at', '<=', filters.date_to + ' 23:59:59');
 
     return q;
   }

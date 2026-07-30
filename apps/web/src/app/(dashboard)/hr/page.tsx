@@ -3,8 +3,8 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Plus, Check, X, Search, Users, Star, FileText, Package,
-  ChevronDown, Building2, Shield, Briefcase, Trash2, Pencil,
-  CalendarDays, AlertCircle,
+  ChevronDown, ChevronRight, Building2, Shield, Briefcase, Trash2, Pencil,
+  CalendarDays, AlertCircle, Filter, TrendingUp, Award,
 } from 'lucide-react';
 import { hrApi, usersApi, departmentsApi, performanceApi, leavePackagesApi } from '@/lib/api';
 import { useAuthStore } from '@/store/auth.store';
@@ -781,122 +781,417 @@ function AllocateModal({ pkg, onClose }: { pkg: LeavePackage; onClose: () => voi
 }
 
 /* ─── PERFORMANCE TAB ───────────────────────────────────────────────────── */
+const REVIEW_STATUS_STYLE: Record<string, string> = {
+  draft: 'bg-gray-100 text-gray-600',
+  submitted: 'bg-blue-100 text-blue-700',
+  acknowledged: 'bg-green-100 text-green-700',
+};
+
+function StarRow({ score, size = 14 }: { score: number; size?: number }) {
+  return (
+    <div className="flex items-center gap-0.5">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <Star key={i} size={size} className={i < score ? 'text-amber-400 fill-amber-400' : 'text-gray-200 fill-gray-200'} />
+      ))}
+    </div>
+  );
+}
+
 function PerformanceTab({ user }: { user: any }) {
   const qc = useQueryClient();
+  const isManager = user?.role !== 'employee';
+
+  /* filters */
+  const [employeeFilter, setEmployeeFilter] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo]     = useState('');
+
+  /* modals */
   const [showCreate, setShowCreate] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingId, setEditingId]   = useState<string | null>(null);
+  const [expandedEmp, setExpandedEmp] = useState<Set<string>>(new Set());
   const [form, setForm] = useState({ reviewee_id: '', period: '', score: '', feedback: '', goals: '' });
 
-  const { data: reviews = [], isLoading } = useQuery<PerformanceReview[]>({ queryKey: ['performance'], queryFn: performanceApi.list });
+  const filters = {
+    reviewee_id: employeeFilter || undefined,
+    date_from:   dateFrom || undefined,
+    date_to:     dateTo   || undefined,
+  };
+
+  const { data: reviews = [], isLoading } = useQuery<any[]>({
+    queryKey: ['performance', filters],
+    queryFn: () => performanceApi.list(filters),
+  });
   const { data: employees = [] } = useQuery({ queryKey: ['employees'], queryFn: usersApi.list });
 
   const createMutation = useMutation({
     mutationFn: () => performanceApi.create({ ...form, score: form.score ? Number(form.score) : undefined }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['performance'] }); toast.success('Review created'); setShowCreate(false); setForm({ reviewee_id: '', period: '', score: '', feedback: '', goals: '' }); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['performance'] });
+      toast.success('Review created');
+      setShowCreate(false);
+      setForm({ reviewee_id: '', period: '', score: '', feedback: '', goals: '' });
+    },
   });
 
   const updateMutation = useMutation({
     mutationFn: (data: any) => performanceApi.update(editingId!, data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['performance'] }); toast.success('Review updated'); setEditingId(null); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['performance'] }); toast.success('Updated'); setEditingId(null); },
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => performanceApi.remove(id),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['performance'] }); toast.success('Review deleted'); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['performance'] }); toast.success('Deleted'); },
   });
+
+  const toggleExpand = (empId: string) =>
+    setExpandedEmp((prev) => { const s = new Set(prev); s.has(empId) ? s.delete(empId) : s.add(empId); return s; });
+
+  /* group reviews by employee */
+  const grouped = reviews.reduce<Record<string, any>>((acc, r) => {
+    if (!acc[r.reviewee_id]) {
+      acc[r.reviewee_id] = {
+        id: r.reviewee_id,
+        name: r.reviewee_name,
+        avatar: r.reviewee_avatar,
+        job_title: r.reviewee_job_title,
+        department: r.reviewee_department,
+        reviews: [],
+      };
+    }
+    acc[r.reviewee_id].reviews.push(r);
+    return acc;
+  }, {});
+
+  const empGroups = Object.values(grouped).map((g: any) => {
+    const scored = g.reviews.filter((r: any) => r.score != null);
+    const avgScore = scored.length ? scored.reduce((s: number, r: any) => s + r.score, 0) / scored.length : null;
+    const latest = g.reviews[0];
+    return { ...g, avgScore, latest };
+  });
+
+  const hasFilters = employeeFilter || dateFrom || dateTo;
 
   if (isLoading) return <Spinner />;
 
-  const otherEmployees = (employees as any[]).filter((e) => e.id !== user?.id);
-  const REVIEW_STATUS: Record<string, string> = { draft: 'bg-gray-100 text-gray-600', submitted: 'bg-blue-100 text-blue-700', acknowledged: 'bg-green-100 text-green-700' };
-
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-gray-500">{reviews.length} review{reviews.length !== 1 ? 's' : ''}</p>
-        <button onClick={() => setShowCreate(true)} className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors">
-          <Plus size={15} /> New Review
-        </button>
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-end gap-3">
+        {/* Employee filter */}
+        <div className="flex-1 min-w-[200px]">
+          <label className="block text-xs font-medium text-gray-500 mb-1">Employee</label>
+          <div className="relative">
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <select
+              value={employeeFilter}
+              onChange={(e) => setEmployeeFilter(e.target.value)}
+              className="w-full pl-8 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 appearance-none bg-white"
+            >
+              <option value="">All employees</option>
+              {(employees as any[]).map((e) => (
+                <option key={e.id} value={e.id}>{e.first_name} {e.last_name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Date range */}
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">From</label>
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">To</label>
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(e) => setDateTo(e.target.value)}
+            className="px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+          />
+        </div>
+
+        {hasFilters && (
+          <button
+            onClick={() => { setEmployeeFilter(''); setDateFrom(''); setDateTo(''); }}
+            className="flex items-center gap-1 text-xs text-gray-400 hover:text-red-500 px-2 py-2 rounded-lg hover:bg-red-50 transition-colors self-end"
+          >
+            <X size={13} /> Clear
+          </button>
+        )}
+
+        <div className="ml-auto self-end">
+          {isManager && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors"
+            >
+              <Plus size={14} /> New Review
+            </button>
+          )}
+        </div>
       </div>
 
-      {reviews.length === 0 ? (
+      {/* Summary strip */}
+      {reviews.length > 0 && (
+        <div className="grid grid-cols-3 gap-3">
+          {[
+            { label: 'Total reviews', value: reviews.length, icon: FileText, color: 'text-indigo-600 bg-indigo-50' },
+            { label: 'Employees reviewed', value: empGroups.length, icon: Users, color: 'text-blue-600 bg-blue-50' },
+            {
+              label: 'Avg score',
+              value: (() => {
+                const scored = reviews.filter((r: any) => r.score != null);
+                if (!scored.length) return '—';
+                return (scored.reduce((s: number, r: any) => s + r.score, 0) / scored.length).toFixed(1) + ' / 5';
+              })(),
+              icon: Award,
+              color: 'text-amber-600 bg-amber-50',
+            },
+          ].map(({ label, value, icon: Icon, color }) => (
+            <div key={label} className="bg-white rounded-xl border border-gray-100 p-4 flex items-center gap-3">
+              <div className={cn('p-2 rounded-lg', color)}><Icon size={16} /></div>
+              <div>
+                <p className="text-lg font-bold text-gray-900">{value}</p>
+                <p className="text-xs text-gray-500">{label}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Employee contribution cards */}
+      {empGroups.length === 0 ? (
         <div className="bg-white rounded-xl border border-dashed border-gray-300 p-14 text-center">
           <Star size={32} className="text-gray-300 mx-auto mb-3" />
-          <p className="text-gray-500 font-medium mb-1">No performance reviews yet</p>
+          <p className="text-gray-500 font-medium mb-1">No performance reviews found</p>
+          {hasFilters && <p className="text-xs text-gray-400">Try adjusting your filters</p>}
         </div>
       ) : (
         <div className="space-y-3">
-          {reviews.map((r) => {
-            const isReviewer = r.reviewer_id === user?.id;
-            const isReviewee = r.reviewee_id === user?.id;
+          {empGroups.map((emp) => {
+            const isOpen = expandedEmp.has(emp.id);
             return (
-              <div key={r.id} className="bg-white rounded-xl border border-gray-200 p-5">
-                <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div key={emp.id} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                {/* Employee header row */}
+                <button
+                  onClick={() => toggleExpand(emp.id)}
+                  className="w-full flex items-center gap-4 px-5 py-4 hover:bg-gray-50 transition-colors text-left"
+                >
+                  {/* Avatar */}
+                  <div className="w-10 h-10 rounded-full bg-indigo-100 text-indigo-700 font-bold text-sm flex items-center justify-center shrink-0">
+                    {getInitials(emp.name)}
+                  </div>
+
+                  {/* Info */}
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap mb-1">
-                      <span className="font-semibold text-gray-900 text-sm">{r.reviewee_name}</span>
-                      <span className="text-gray-400">·</span>
-                      <span className="text-sm text-gray-500">{r.period}</span>
-                      <span className={cn('text-[11px] font-semibold px-2 py-0.5 rounded-full capitalize', REVIEW_STATUS[r.status])}>{r.status}</span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold text-gray-900 text-sm">{emp.name}</span>
+                      {emp.department && (
+                        <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">{emp.department}</span>
+                      )}
+                      {emp.job_title && (
+                        <span className="text-xs text-gray-400">{emp.job_title}</span>
+                      )}
                     </div>
-                    <p className="text-xs text-gray-400">Reviewer: <span className="font-medium text-gray-600">{r.reviewer_name}</span></p>
-                    {r.score != null && (
-                      <div className="flex items-center gap-1 mt-2">
-                        {Array.from({ length: 5 }).map((_, i) => (
-                          <Star key={i} size={14} className={i < (r.score ?? 0) ? 'text-amber-400 fill-amber-400' : 'text-gray-200 fill-gray-200'} />
-                        ))}
-                        <span className="text-xs text-gray-500 ml-1">{r.score}/5</span>
-                      </div>
-                    )}
-                    {r.feedback && <p className="text-sm text-gray-600 mt-2 line-clamp-2">{r.feedback}</p>}
+                    <div className="flex items-center gap-3 mt-1">
+                      {emp.avgScore != null && <StarRow score={Math.round(emp.avgScore)} />}
+                      {emp.avgScore != null && (
+                        <span className="text-xs text-gray-500">{emp.avgScore.toFixed(1)} avg</span>
+                      )}
+                      <span className="text-xs text-gray-400">
+                        {emp.reviews.length} review{emp.reviews.length !== 1 ? 's' : ''}
+                        {emp.latest && ` · latest: ${emp.latest.period}`}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
-                    {isReviewer && r.status === 'draft' && (
-                      <>
-                        <button onClick={() => { setEditingId(r.id); setForm({ reviewee_id: r.reviewee_id, period: r.period, score: r.score?.toString() ?? '', feedback: r.feedback ?? '', goals: r.goals ?? '' }); }} className="text-xs text-gray-500 hover:text-gray-700 px-3 py-1.5 border border-gray-200 rounded-lg hover:bg-gray-50">Edit</button>
-                        <button onClick={() => updateMutation.mutate({ status: 'submitted' })} className="text-xs font-medium text-white bg-primary-600 hover:bg-primary-700 px-3 py-1.5 rounded-lg">Submit</button>
-                        <button onClick={() => { if (confirm('Delete?')) deleteMutation.mutate(r.id); }} className="text-xs text-red-400 hover:text-red-600 px-2 py-1.5 hover:bg-red-50 rounded-lg">Delete</button>
-                      </>
-                    )}
-                    {isReviewee && r.status === 'submitted' && (
-                      <button onClick={() => updateMutation.mutate({ status: 'acknowledged' })} className="text-xs font-medium text-white bg-green-600 hover:bg-green-700 px-3 py-1.5 rounded-lg">Acknowledge</button>
+
+                  {/* Score badge */}
+                  {emp.avgScore != null && (
+                    <div className={cn(
+                      'shrink-0 w-12 h-12 rounded-xl flex items-center justify-center font-bold text-sm',
+                      emp.avgScore >= 4 ? 'bg-green-100 text-green-700'
+                      : emp.avgScore >= 3 ? 'bg-amber-100 text-amber-700'
+                      : 'bg-red-100 text-red-600',
+                    )}>
+                      {emp.avgScore.toFixed(1)}
+                    </div>
+                  )}
+
+                  <div className="shrink-0 text-gray-400">
+                    {isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                  </div>
+                </button>
+
+                {/* Expanded review list */}
+                {isOpen && (
+                  <div className="border-t border-gray-100">
+                    {emp.reviews.map((r: any) => {
+                      const isReviewer = r.reviewer_id === user?.id;
+                      const isReviewee = r.reviewee_id === user?.id;
+                      return (
+                        <div key={r.id} className="flex items-start gap-4 px-5 py-4 border-b border-gray-50 last:border-b-0 hover:bg-gray-50 transition-colors">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap mb-1">
+                              <span className="text-sm font-medium text-gray-900">{r.period}</span>
+                              <span className={cn('text-[11px] font-semibold px-2 py-0.5 rounded-full capitalize', REVIEW_STATUS_STYLE[r.status])}>
+                                {r.status}
+                              </span>
+                              <span className="text-xs text-gray-400">by {r.reviewer_name}</span>
+                              <span className="text-xs text-gray-300">·</span>
+                              <span className="text-xs text-gray-400">{formatDate(r.created_at)}</span>
+                            </div>
+                            {r.score != null && (
+                              <div className="flex items-center gap-2 mb-1">
+                                <StarRow score={r.score} />
+                                <span className="text-xs text-gray-500">{r.score}/5</span>
+                              </div>
+                            )}
+                            {r.feedback && <p className="text-sm text-gray-600 mt-1">{r.feedback}</p>}
+                            {r.goals && (
+                              <p className="text-xs text-gray-400 mt-1 flex items-start gap-1">
+                                <TrendingUp size={11} className="mt-0.5 shrink-0" />
+                                {r.goals}
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {isReviewer && r.status === 'draft' && (
+                              <>
+                                <button
+                                  onClick={() => { setEditingId(r.id); setForm({ reviewee_id: r.reviewee_id, period: r.period, score: r.score?.toString() ?? '', feedback: r.feedback ?? '', goals: r.goals ?? '' }); }}
+                                  className="text-xs text-gray-500 hover:text-gray-700 px-2.5 py-1.5 border border-gray-200 rounded-lg hover:bg-gray-50"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  onClick={() => { setEditingId(r.id); updateMutation.mutate({ status: 'submitted' }); }}
+                                  className="text-xs font-medium text-white bg-primary-600 hover:bg-primary-700 px-2.5 py-1.5 rounded-lg"
+                                >
+                                  Submit
+                                </button>
+                                <button
+                                  onClick={() => { if (confirm('Delete this review?')) deleteMutation.mutate(r.id); }}
+                                  className="text-xs text-red-400 hover:text-red-600 px-1.5 py-1.5 hover:bg-red-50 rounded-lg"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </>
+                            )}
+                            {isReviewee && r.status === 'submitted' && (
+                              <button
+                                onClick={() => { setEditingId(r.id); updateMutation.mutate({ status: 'acknowledged' }); }}
+                                className="text-xs font-medium text-white bg-green-600 hover:bg-green-700 px-2.5 py-1.5 rounded-lg"
+                              >
+                                Acknowledge
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {isManager && (
+                      <button
+                        onClick={() => { setShowCreate(true); setForm((f) => ({ ...f, reviewee_id: emp.id })); }}
+                        className="w-full flex items-center gap-2 px-5 py-3 text-xs text-indigo-600 hover:bg-indigo-50 transition-colors font-medium"
+                      >
+                        <Plus size={13} /> Add review for {emp.name.split(' ')[0]}
+                      </button>
                     )}
                   </div>
-                </div>
+                )}
               </div>
             );
           })}
         </div>
       )}
 
+      {/* Create / Edit modal */}
       {(showCreate || editingId) && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-lg">
-            <h2 className="text-lg font-bold mb-5">{showCreate ? 'New Review' : 'Edit Review'}</h2>
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => { setShowCreate(false); setEditingId(null); }}>
+          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-bold">{showCreate ? 'New Review' : 'Edit Review'}</h2>
+              <button onClick={() => { setShowCreate(false); setEditingId(null); }} className="p-1 hover:bg-gray-100 rounded-lg"><X size={18} /></button>
+            </div>
             <div className="space-y-3">
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Employee *</label>
-                <select value={form.reviewee_id} onChange={(e) => setForm({ ...form, reviewee_id: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500">
+                <select
+                  value={form.reviewee_id}
+                  onChange={(e) => setForm({ ...form, reviewee_id: e.target.value })}
+                  disabled={!!editingId}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:bg-gray-50"
+                >
                   <option value="">Select employee…</option>
-                  {otherEmployees.map((e) => <option key={e.id} value={e.id}>{e.first_name} {e.last_name}</option>)}
+                  {(employees as any[]).filter((e) => e.id !== user?.id).map((e) => (
+                    <option key={e.id} value={e.id}>{e.first_name} {e.last_name}</option>
+                  ))}
                 </select>
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Period * (e.g. Q2 2026)</label>
-                <input value={form.period} onChange={(e) => setForm({ ...form, period: e.target.value })} placeholder="Q2 2026" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500" />
+                <input
+                  value={form.period}
+                  onChange={(e) => setForm({ ...form, period: e.target.value })}
+                  placeholder="Q2 2026"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">Score (1–5)</label>
-                <select value={form.score} onChange={(e) => setForm({ ...form, score: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
-                  <option value="">No score yet</option>
-                  {[1,2,3,4,5].map((n) => <option key={n} value={n}>{'★'.repeat(n)} ({n}/5)</option>)}
-                </select>
+                <div className="flex gap-2">
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setForm({ ...form, score: form.score === String(n) ? '' : String(n) })}
+                      className="flex-1 py-2 rounded-lg border text-sm font-medium transition-colors"
+                      style={{
+                        background: Number(form.score) >= n ? '#fbbf24' : '',
+                        borderColor: Number(form.score) >= n ? '#f59e0b' : '#e5e7eb',
+                        color: Number(form.score) >= n ? '#fff' : '#9ca3af',
+                      }}
+                    >
+                      {n}★
+                    </button>
+                  ))}
+                </div>
               </div>
-              <textarea value={form.feedback} onChange={(e) => setForm({ ...form, feedback: e.target.value })} placeholder="Feedback…" rows={3} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary-500" />
-              <textarea value={form.goals} onChange={(e) => setForm({ ...form, goals: e.target.value })} placeholder="Goals for next period…" rows={2} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary-500" />
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Feedback</label>
+                <textarea
+                  value={form.feedback}
+                  onChange={(e) => setForm({ ...form, feedback: e.target.value })}
+                  placeholder="What went well, what to improve…"
+                  rows={3}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Goals for next period</label>
+                <textarea
+                  value={form.goals}
+                  onChange={(e) => setForm({ ...form, goals: e.target.value })}
+                  placeholder="Goals and targets…"
+                  rows={2}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
+              </div>
             </div>
             <div className="flex gap-2 mt-6">
-              <button onClick={() => { setShowCreate(false); setEditingId(null); }} className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm">Cancel</button>
+              <button
+                onClick={() => { setShowCreate(false); setEditingId(null); }}
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50"
+              >
+                Cancel
+              </button>
               <button
                 onClick={() => showCreate ? createMutation.mutate() : updateMutation.mutate(form)}
                 disabled={!form.reviewee_id || !form.period || createMutation.isPending || updateMutation.isPending}

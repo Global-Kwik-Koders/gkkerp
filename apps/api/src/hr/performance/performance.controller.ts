@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Delete, Param, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body, Query, UseGuards } from '@nestjs/common';
 import { PerformanceService } from './performance.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -10,8 +10,13 @@ export class PerformanceController {
   constructor(private svc: PerformanceService) {}
 
   @Get()
-  findAll(@CurrentUser() user: any) {
-    return this.svc.findAll(user.company_id, user.id, user.role);
+  findAll(
+    @CurrentUser() user: any,
+    @Query('reviewee_id') reviewee_id?: string,
+    @Query('date_from') date_from?: string,
+    @Query('date_to') date_to?: string,
+  ) {
+    return this.svc.findAll(user.company_id, user.id, user.role, { reviewee_id, date_from, date_to });
   }
 
   @Get(':id')

@@ -132,7 +132,8 @@ export const departmentsApi = {
 
 // Performance Reviews
 export const performanceApi = {
-  list: () => api.get('/hr/performance').then((r) => r.data),
+  list: (params?: { reviewee_id?: string; date_from?: string; date_to?: string }) =>
+    api.get('/hr/performance', { params }).then((r) => r.data),
   get: (id: string) => api.get(`/hr/performance/${id}`).then((r) => r.data),
   create: (data: any) => api.post('/hr/performance', data).then((r) => r.data),
   update: (id: string, data: any) => api.patch(`/hr/performance/${id}`, data).then((r) => r.data),
