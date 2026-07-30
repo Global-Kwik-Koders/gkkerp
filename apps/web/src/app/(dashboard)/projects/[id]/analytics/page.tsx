@@ -1,0 +1,249 @@
+'use client';
+import { useParams } from 'next/navigation';
+import { useQuery } from '@tanstack/react-query';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  PieChart, Pie, Cell, Legend,
+} from 'recharts';
+import { projectsApi } from '@/lib/api';
+import { TrendingUp, CheckCircle, Clock, AlertTriangle, Layers } from 'lucide-react';
+import { cn } from '@/lib/utils';
+
+const STATUS_COLORS: Record<string, string> = {
+  backlog: '#9ca3af',
+  todo: '#3b82f6',
+  in_progress: '#f59e0b',
+  in_review: '#8b5cf6',
+  done: '#10b981',
+};
+
+const PRIORITY_COLORS: Record<string, string> = {
+  low: '#9ca3af',
+  medium: '#3b82f6',
+  high: '#f59e0b',
+  urgent: '#ef4444',
+};
+
+const TYPE_COLORS: Record<string, string> = {
+  bug: '#ef4444',
+  task: '#3b82f6',
+  story: '#10b981',
+  epic: '#8b5cf6',
+};
+
+function HealthRing({ score }: { score: number }) {
+  const color = score >= 80 ? '#10b981' : score >= 50 ? '#f59e0b' : '#ef4444';
+  const label = score >= 80 ? 'Healthy' : score >= 50 ? 'At Risk' : 'Critical';
+  const radius = 52;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (score / 100) * circumference;
+
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <svg width="128" height="128" viewBox="0 0 128 128">
+        <circle cx="64" cy="64" r={radius} fill="none" stroke="#f3f4f6" strokeWidth="12" />
+        <circle
+          cx="64" cy="64" r={radius}
+          fill="none" stroke={color} strokeWidth="12"
+          strokeDasharray={circumference} strokeDashoffset={offset}
+          strokeLinecap="round"
+          transform="rotate(-90 64 64)"
+          style={{ transition: 'stroke-dashoffset 0.6s ease' }}
+        />
+        <text x="64" y="58" textAnchor="middle" fontSize="22" fontWeight="700" fill={color}>{score}%</text>
+        <text x="64" y="76" textAnchor="middle" fontSize="11" fill="#6b7280">{label}</text>
+      </svg>
+    </div>
+  );
+}
+
+export default function AnalyticsPage() {
+  const { id: projectId } = useParams<{ id: string }>();
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['analytics', projectId],
+    queryFn: () => projectsApi.analytics(projectId),
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-60">
+        <div className="w-6 h-6 border-2 border-primary-600 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!data) return <p className="text-gray-500">No analytics data.</p>;
+
+  const statusData = Object.entries(data.byStatus as Record<string, number>).map(([name, value]) => ({
+    name: name.replace('_', ' '),
+    value,
+    color: STATUS_COLORS[name] ?? '#9ca3af',
+  }));
+
+  const priorityData = Object.entries(data.byPriority as Record<string, number>).map(([name, value]) => ({
+    name,
+    value,
+    color: PRIORITY_COLORS[name] ?? '#9ca3af',
+  }));
+
+  const typeData = Object.entries(data.byType as Record<string, number>).map(([name, value]) => ({
+    name,
+    value,
+    color: TYPE_COLORS[name] ?? '#9ca3af',
+  }));
+
+  const velocity = (data.velocity as any[]) ?? [];
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-xl font-bold text-gray-900">Analytics</h2>
+
+      {/* KPI cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <KpiCard
+          icon={<Layers size={18} />}
+          label="Total Issues"
+          value={data.total}
+          color="blue"
+        />
+        <KpiCard
+          icon={<CheckCircle size={18} />}
+          label="Completed"
+          value={data.done}
+          color="green"
+        />
+        <KpiCard
+          icon={<Clock size={18} />}
+          label="In Progress"
+          value={data.inProgress}
+          color="amber"
+        />
+        <KpiCard
+          icon={<TrendingUp size={18} />}
+          label="Sprints"
+          value={data.sprintCount}
+          color="purple"
+        />
+      </div>
+
+      {/* Health + Status breakdown */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Health ring */}
+        <div className="bg-white rounded-xl border border-gray-200 p-5 flex flex-col items-center justify-center gap-3">
+          <p className="text-sm font-semibold text-gray-700">Project Health</p>
+          <HealthRing score={data.health} />
+          <p className="text-xs text-gray-400 text-center">Based on % of issues completed</p>
+        </div>
+
+        {/* Status pie */}
+        <div className="bg-white rounded-xl border border-gray-200 p-5 lg:col-span-2">
+          <p className="text-sm font-semibold text-gray-700 mb-4">Issues by Status</p>
+          {statusData.length === 0 ? (
+            <EmptyChart />
+          ) : (
+            <div className="flex items-center gap-4 flex-wrap">
+              <PieChart width={180} height={180}>
+                <Pie data={statusData} cx={85} cy={85} innerRadius={50} outerRadius={80} dataKey="value" paddingAngle={3}>
+                  {statusData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                </Pie>
+              </PieChart>
+              <div className="flex flex-col gap-2">
+                {statusData.map((d) => (
+                  <div key={d.name} className="flex items-center gap-2 text-sm">
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: d.color }} />
+                    <span className="capitalize text-gray-600">{d.name}</span>
+                    <span className="font-semibold text-gray-900 ml-auto pl-4">{d.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Sprint velocity bar chart */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <p className="text-sm font-semibold text-gray-700 mb-4">Sprint Velocity (Story Points)</p>
+        {velocity.length === 0 ? (
+          <EmptyChart message="No sprints yet." />
+        ) : (
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={velocity} margin={{ top: 4, right: 16, left: 0, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+              <XAxis dataKey="sprint" tick={{ fontSize: 11, fill: '#6b7280' }} />
+              <YAxis tick={{ fontSize: 11, fill: '#6b7280' }} />
+              <Tooltip
+                contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
+                formatter={(val: number, name: string) => [val, name === 'completed' ? 'Completed pts' : 'Total pts']}
+              />
+              <Bar dataKey="total" fill="#e0e7ff" name="total" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="completed" fill="#6366f1" name="completed" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+
+      {/* Priority + Type breakdown */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <p className="text-sm font-semibold text-gray-700 mb-4">Issues by Priority</p>
+          {priorityData.length === 0 ? <EmptyChart /> : (
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={priorityData} layout="vertical" margin={{ left: 8, right: 16 }}>
+                <XAxis type="number" tick={{ fontSize: 11, fill: '#6b7280' }} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: '#6b7280' }} width={55} />
+                <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e5e7eb' }} />
+                <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                  {priorityData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <p className="text-sm font-semibold text-gray-700 mb-4">Issues by Type</p>
+          {typeData.length === 0 ? <EmptyChart /> : (
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={typeData} layout="vertical" margin={{ left: 8, right: 16 }}>
+                <XAxis type="number" tick={{ fontSize: 11, fill: '#6b7280' }} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: '#6b7280' }} width={55} />
+                <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e5e7eb' }} />
+                <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                  {typeData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KpiCard({ icon, label, value, color }: { icon: React.ReactNode; label: string; value: number; color: string }) {
+  const styles: Record<string, string> = {
+    blue: 'bg-blue-50 text-blue-600',
+    green: 'bg-green-50 text-green-600',
+    amber: 'bg-amber-50 text-amber-600',
+    purple: 'bg-purple-50 text-purple-600',
+  };
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-4 flex items-center gap-3">
+      <div className={cn('w-10 h-10 rounded-lg flex items-center justify-center shrink-0', styles[color])}>
+        {icon}
+      </div>
+      <div>
+        <p className="text-xs text-gray-500">{label}</p>
+        <p className="text-2xl font-bold text-gray-900">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+function EmptyChart({ message = 'No data yet.' }: { message?: string }) {
+  return (
+    <div className="flex items-center justify-center h-28 text-sm text-gray-400">{message}</div>
+  );
+}

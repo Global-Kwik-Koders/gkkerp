@@ -1,0 +1,921 @@
+'use client';
+import { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  Plus, Check, X, Search, Users, Star, FileText, Package,
+  ChevronDown, Building2, Shield, Briefcase, Trash2, Pencil,
+  CalendarDays, AlertCircle,
+} from 'lucide-react';
+import { hrApi, usersApi, departmentsApi, performanceApi, leavePackagesApi } from '@/lib/api';
+import { useAuthStore } from '@/store/auth.store';
+import { formatDate, cn, getInitials } from '@/lib/utils';
+import toast from 'react-hot-toast';
+import type { LeaveRequest, PerformanceReview, LeavePackage, LeaveBalance } from '@/types';
+
+type Tab = 'overview' | 'employees' | 'leave-packages' | 'performance';
+
+const LEAVE_STATUS_STYLE: Record<string, string> = {
+  pending: 'bg-amber-100 text-amber-700',
+  approved: 'bg-green-100 text-green-700',
+  rejected: 'bg-red-100 text-red-700',
+};
+
+const LEAVE_TYPES = ['annual', 'sick', 'emergency', 'unpaid', 'maternity', 'paternity'];
+
+export default function HrPage() {
+  const user = useAuthStore((s) => s.user);
+  const isManager = user?.role !== 'employee';
+  const [tab, setTab] = useState<Tab>('overview');
+
+  const allTabs: { key: Tab; label: string; icon: React.ReactNode; managerOnly?: boolean }[] = [
+    { key: 'overview', label: isManager ? 'Overview' : 'My Leave', icon: <FileText size={14} /> },
+    { key: 'employees', label: 'Employees', icon: <Users size={14} />, managerOnly: true },
+    { key: 'leave-packages', label: 'Leave Packages', icon: <Package size={14} />, managerOnly: true },
+    { key: 'performance', label: 'Performance', icon: <Star size={14} /> },
+  ];
+  const tabs = allTabs.filter((t) => !t.managerOnly || isManager);
+
+  return (
+    <div className="space-y-5">
+      <h1 className="text-xl font-bold text-gray-900">{isManager ? 'HR Management' : 'My Workspace'}</h1>
+
+      <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit flex-wrap">
+        {tabs.map(({ key, label, icon }) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            className={cn(
+              'flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg transition-colors',
+              tab === key ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700',
+            )}
+          >
+            {icon}{label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'overview' && <OverviewTab isManager={isManager} user={user} />}
+      {tab === 'employees' && <EmployeesTab isManager={isManager} />}
+      {tab === 'leave-packages' && <LeavePackagesTab isManager={isManager} />}
+      {tab === 'performance' && <PerformanceTab user={user} />}
+    </div>
+  );
+}
+
+/* ─── OVERVIEW TAB ─────────────────────────────────────────────────────── */
+function OverviewTab({ isManager, user }: { isManager: boolean; user: any }) {
+  const qc = useQueryClient();
+  const [showLeave, setShowLeave] = useState(false);
+  const [leaveForm, setLeaveForm] = useState({ type: 'annual', start_date: '', end_date: '', reason: '' });
+
+  const { data: leaves = [] } = useQuery({
+    queryKey: ['leaves', isManager ? 'all' : 'mine'],
+    queryFn: isManager ? hrApi.leave.list : hrApi.leave.mine,
+  });
+  const { data: announcements = [] } = useQuery({ queryKey: ['announcements'], queryFn: hrApi.announcements.list });
+  const { data: balance = [] } = useQuery<LeaveBalance[]>({
+    queryKey: ['leave-balance', 'mine'],
+    queryFn: leavePackagesApi.myBalance,
+    enabled: !isManager,
+  });
+
+  const createLeave = useMutation({
+    mutationFn: hrApi.leave.create,
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['leaves'] }); setShowLeave(false); toast.success('Leave request submitted'); },
+    onError: (e: any) => toast.error(e?.response?.data?.message ?? 'Failed to submit'),
+  });
+  const approve = useMutation({
+    mutationFn: (id: string) => hrApi.leave.approve(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['leaves'] }); toast.success('Leave approved'); },
+  });
+  const reject = useMutation({
+    mutationFn: (id: string) => hrApi.leave.reject(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['leaves'] }); toast.success('Leave rejected'); },
+  });
+
+  // Group balance by leave_type (pick the first active package per type)
+  const balanceMap = (balance as LeaveBalance[]).reduce<Record<string, LeaveBalance>>((acc, b) => {
+    if (!acc[b.leave_type]) acc[b.leave_type] = b;
+    return acc;
+  }, {});
+
+  const requestedDays = leaveForm.start_date && leaveForm.end_date
+    ? Math.max(1, Math.round((new Date(leaveForm.end_date).getTime() - new Date(leaveForm.start_date).getTime()) / 86400000) + 1)
+    : 0;
+  const selectedBalance = balanceMap[leaveForm.type];
+  const overLimit = selectedBalance && requestedDays > selectedBalance.days_remaining;
+
+  return (
+    <div className="space-y-5">
+      {/* Announcements */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h2 className="font-semibold text-gray-900 mb-4">Announcements</h2>
+        {(announcements as any[]).length === 0 ? (
+          <p className="text-gray-400 text-sm">No announcements</p>
+        ) : (
+          <div className="space-y-3">
+            {(announcements as any[]).map((a) => (
+              <div key={a.id} className="p-3 bg-gray-50 rounded-lg border border-gray-100">
+                <div className="flex items-center justify-between">
+                  <p className="font-medium text-gray-900 text-sm">{a.title}</p>
+                  {a.is_pinned && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded">Pinned</span>}
+                </div>
+                <p className="text-sm text-gray-600 mt-1">{a.body}</p>
+                <p className="text-xs text-gray-400 mt-2">{a.author_name} · {formatDate(a.created_at)}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Employee's leave balance summary */}
+      {!isManager && Object.keys(balanceMap).length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <h2 className="font-semibold text-gray-900 mb-4">My Leave Balance</h2>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {Object.values(balanceMap).map((b) => (
+              <div key={b.leave_type} className="p-3 bg-gray-50 rounded-lg border border-gray-100">
+                <p className="text-xs font-medium text-gray-500 capitalize mb-1">{b.leave_type}</p>
+                <div className="flex items-end justify-between mb-1.5">
+                  <span className="text-xl font-bold text-gray-900">{b.days_remaining}</span>
+                  <span className="text-xs text-gray-400">/ {b.days_allowed} days</span>
+                </div>
+                <div className="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                  <div
+                    className={cn('h-full rounded-full', b.days_remaining > b.days_allowed * 0.3 ? 'bg-green-500' : 'bg-amber-500')}
+                    style={{ width: `${Math.min(100, (b.days_remaining / b.days_allowed) * 100)}%` }}
+                  />
+                </div>
+                <p className="text-xs text-gray-400 mt-1">{b.days_used} used · {b.package_name}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Leave Requests */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold text-gray-900">{isManager ? 'All Leave Requests' : 'My Leave Requests'}</h2>
+          <button
+            onClick={() => setShowLeave(true)}
+            className="flex items-center gap-1.5 bg-primary-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-primary-700"
+          >
+            <Plus size={14} /> Request Leave
+          </button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-gray-500 border-b border-gray-100">
+                {isManager && <th className="pb-2 font-medium">Employee</th>}
+                <th className="pb-2 font-medium">Type</th>
+                <th className="pb-2 font-medium">Period</th>
+                <th className="pb-2 font-medium">Days</th>
+                <th className="pb-2 font-medium">Status</th>
+                {isManager && <th className="pb-2 font-medium">Actions</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {(leaves as LeaveRequest[]).map((l) => {
+                const days = Math.round((new Date(l.end_date).getTime() - new Date(l.start_date).getTime()) / 86400000) + 1;
+                return (
+                  <tr key={l.id} className="hover:bg-gray-50">
+                    {isManager && <td className="py-3 font-medium text-gray-900">{l.employee_name}</td>}
+                    <td className="py-3 capitalize text-gray-700">{l.type}</td>
+                    <td className="py-3 text-gray-600">{formatDate(l.start_date)} → {formatDate(l.end_date)}</td>
+                    <td className="py-3 text-gray-600">{days}d</td>
+                    <td className="py-3">
+                      <span className={cn('px-2 py-0.5 rounded-full text-xs font-medium capitalize', LEAVE_STATUS_STYLE[l.status])}>
+                        {l.status}
+                      </span>
+                    </td>
+                    {isManager && l.status === 'pending' && (
+                      <td className="py-3">
+                        <div className="flex gap-1">
+                          <button onClick={() => approve.mutate(l.id)} className="p-1.5 bg-green-100 text-green-600 rounded hover:bg-green-200"><Check size={13} /></button>
+                          <button onClick={() => reject.mutate(l.id)} className="p-1.5 bg-red-100 text-red-600 rounded hover:bg-red-200"><X size={13} /></button>
+                        </div>
+                      </td>
+                    )}
+                    {isManager && l.status !== 'pending' && <td />}
+                  </tr>
+                );
+              })}
+              {(leaves as LeaveRequest[]).length === 0 && (
+                <tr><td colSpan={6} className="py-8 text-center text-gray-400">No leave requests</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Leave request modal */}
+      {showLeave && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md">
+            <h2 className="text-lg font-bold mb-4">Request Leave</h2>
+
+            {/* Balance summary in modal */}
+            {!isManager && Object.keys(balanceMap).length > 0 && (
+              <div className="mb-4 p-3 bg-gray-50 rounded-xl border border-gray-100 space-y-2">
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Your Balance</p>
+                {Object.values(balanceMap).map((b) => (
+                  <div key={b.leave_type} className="flex items-center gap-2">
+                    <span className="text-xs capitalize text-gray-600 w-20">{b.leave_type}</span>
+                    <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                      <div
+                        className={cn('h-full rounded-full', b.days_remaining > 0 ? 'bg-green-500' : 'bg-gray-300')}
+                        style={{ width: `${Math.min(100, (b.days_remaining / b.days_allowed) * 100)}%` }}
+                      />
+                    </div>
+                    <span className="text-xs font-medium text-gray-700 w-16 text-right">{b.days_remaining}/{b.days_allowed}d</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="space-y-3">
+              <select
+                value={leaveForm.type}
+                onChange={(e) => setLeaveForm({ ...leaveForm, type: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+              >
+                {LEAVE_TYPES.map((t) => (
+                  <option key={t} value={t} className="capitalize">{t.charAt(0).toUpperCase() + t.slice(1)}</option>
+                ))}
+              </select>
+
+              {/* Balance warning for selected type */}
+              {!isManager && selectedBalance && (
+                <p className={cn('text-xs px-2', overLimit ? 'text-red-500' : 'text-green-600')}>
+                  {selectedBalance.leave_type.charAt(0).toUpperCase() + selectedBalance.leave_type.slice(1)}: {selectedBalance.days_remaining} days remaining
+                  {requestedDays > 0 && ` · Requesting ${requestedDays} day${requestedDays !== 1 ? 's' : ''}`}
+                  {overLimit && ' ⚠ Exceeds balance'}
+                </p>
+              )}
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">From</label>
+                  <input type="date" value={leaveForm.start_date} onChange={(e) => setLeaveForm({ ...leaveForm, start_date: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">To</label>
+                  <input type="date" value={leaveForm.end_date} onChange={(e) => setLeaveForm({ ...leaveForm, end_date: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" />
+                </div>
+              </div>
+              <textarea
+                value={leaveForm.reason}
+                onChange={(e) => setLeaveForm({ ...leaveForm, reason: e.target.value })}
+                placeholder="Reason (optional)"
+                rows={2}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm resize-none"
+              />
+            </div>
+            <div className="flex gap-2 mt-5">
+              <button onClick={() => setShowLeave(false)} className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm">Cancel</button>
+              <button
+                onClick={() => createLeave.mutate(leaveForm)}
+                disabled={!leaveForm.start_date || !leaveForm.end_date || createLeave.isPending}
+                className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium disabled:opacity-50"
+              >
+                {createLeave.isPending ? 'Submitting…' : 'Submit'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── EMPLOYEES TAB ─────────────────────────────────────────────────────── */
+function EmployeesTab({ isManager }: { isManager: boolean }) {
+  const qc = useQueryClient();
+  const [search, setSearch] = useState('');
+  const [deptFilter, setDeptFilter] = useState('all');
+  const [roleFilter, setRoleFilter] = useState('all');
+  const [showAdd, setShowAdd] = useState(false);
+  const [addForm, setAddForm] = useState({ first_name: '', last_name: '', email: '', password: '', role: 'employee', job_title: '', department_id: '' });
+
+  const { data: employees = [], isLoading } = useQuery({ queryKey: ['employees'], queryFn: usersApi.list });
+  const { data: departments = [] } = useQuery({ queryKey: ['departments'], queryFn: departmentsApi.list });
+
+  const createMutation = useMutation({
+    mutationFn: () => usersApi.create(addForm),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['employees'] });
+      toast.success('Employee created');
+      setShowAdd(false);
+      setAddForm({ first_name: '', last_name: '', email: '', password: '', role: 'employee', job_title: '', department_id: '' });
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.message ?? 'Failed to create employee'),
+  });
+
+  const filtered = (employees as any[]).filter((e) => {
+    const name = `${e.first_name} ${e.last_name} ${e.email} ${e.job_title ?? ''}`.toLowerCase();
+    return (!search || name.includes(search.toLowerCase()))
+      && (deptFilter === 'all' || e.department_id === deptFilter)
+      && (roleFilter === 'all' || e.role === roleFilter);
+  });
+
+  const byDept = filtered.reduce<Record<string, any[]>>((acc, emp) => {
+    const key = emp.department_name ?? 'No Department';
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(emp);
+    return acc;
+  }, {});
+
+  if (isLoading) return <Spinner />;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search employees…"
+            className="w-full pl-9 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500" />
+        </div>
+        <select value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)} className="px-3 py-2 text-sm border border-gray-300 rounded-lg">
+          <option value="all">All Departments</option>
+          {(departments as any[]).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+        </select>
+        <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} className="px-3 py-2 text-sm border border-gray-300 rounded-lg">
+          <option value="all">All Roles</option>
+          <option value="admin">Admin</option>
+          <option value="manager">Manager</option>
+          <option value="employee">Employee</option>
+        </select>
+        <span className="text-sm text-gray-400">{filtered.length} employee{filtered.length !== 1 ? 's' : ''}</span>
+        {isManager && (
+          <button onClick={() => setShowAdd(true)} className="flex items-center gap-1.5 px-4 py-2 bg-primary-600 text-white text-sm font-medium rounded-lg hover:bg-primary-700 transition-colors ml-auto">
+            <Plus size={14} /> Add Employee
+          </button>
+        )}
+      </div>
+
+      {Object.entries(byDept).map(([deptName, emps]) => {
+        // Find the dept head name for this department group
+        const deptRecord = (departments as any[]).find((d) => d.name === deptName);
+        const headId = deptRecord?.manager_id;
+        const headName = deptRecord?.manager_name;
+        return (
+          <div key={deptName} className="space-y-2">
+            <div className="flex items-center gap-2 text-xs font-semibold text-gray-500 uppercase tracking-wide flex-wrap">
+              <Building2 size={12} />{deptName}
+              <span className="bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full normal-case font-normal">{emps.length}</span>
+              {headName && (
+                <span className="bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full normal-case font-normal flex items-center gap-1">
+                  <Shield size={10} /> Head: {headName}
+                </span>
+              )}
+              {!headName && (
+                <span className="bg-gray-50 text-gray-400 border border-gray-200 px-2 py-0.5 rounded-full normal-case font-normal text-[10px]">
+                  No head assigned
+                </span>
+              )}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {emps.map((emp) => <EmployeeCard key={emp.id} emp={emp} isManager={isManager} isDeptHead={emp.id === headId} />)}
+            </div>
+          </div>
+        );
+      })}
+
+      {filtered.length === 0 && (
+        <div className="bg-white rounded-xl border border-dashed border-gray-300 p-14 text-center">
+          <Users size={32} className="text-gray-300 mx-auto mb-3" />
+          <p className="text-gray-500 text-sm">No employees match your filters.</p>
+        </div>
+      )}
+
+      {/* Add Employee Modal */}
+      {showAdd && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-lg">
+            <h2 className="text-lg font-bold mb-5">Add Employee</h2>
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">First name *</label>
+                  <input value={addForm.first_name} onChange={(e) => setAddForm({ ...addForm, first_name: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Last name *</label>
+                  <input value={addForm.last_name} onChange={(e) => setAddForm({ ...addForm, last_name: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Email *</label>
+                <input type="email" value={addForm.email} onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Temporary password *</label>
+                <input type="password" value={addForm.password} onChange={(e) => setAddForm({ ...addForm, password: e.target.value })}
+                  placeholder="Min 8 characters"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Job title</label>
+                <input value={addForm.job_title} onChange={(e) => setAddForm({ ...addForm, job_title: e.target.value })}
+                  placeholder="e.g. Software Engineer"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Role</label>
+                  <select value={addForm.role} onChange={(e) => setAddForm({ ...addForm, role: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none">
+                    <option value="employee">Employee</option>
+                    <option value="manager">Manager</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Department</label>
+                  <select value={addForm.department_id} onChange={(e) => setAddForm({ ...addForm, department_id: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none">
+                    <option value="">No department</option>
+                    {(departments as any[]).map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-2 mt-6">
+              <button onClick={() => setShowAdd(false)} className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm">Cancel</button>
+              <button
+                onClick={() => createMutation.mutate()}
+                disabled={!addForm.first_name || !addForm.last_name || !addForm.email || !addForm.password || createMutation.isPending}
+                className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-primary-700"
+              >
+                {createMutation.isPending ? 'Creating…' : 'Create Employee'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EmployeeCard({ emp, isManager, isDeptHead }: { emp: any; isManager: boolean; isDeptHead?: boolean }) {
+  const qc = useQueryClient();
+  const [expanded, setExpanded] = useState(false);
+  const ROLE_COLOR: Record<string, string> = {
+    admin: 'bg-purple-100 text-purple-700',
+    manager: 'bg-blue-100 text-blue-700',
+    employee: 'bg-gray-100 text-gray-600',
+  };
+  const deactivate = useMutation({
+    mutationFn: () => usersApi.update(emp.id, { is_active: false }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['employees'] }); toast.success('Employee deactivated'); },
+  });
+  return (
+    <div className={cn(
+      'bg-white rounded-xl border p-4 transition-colors',
+      isDeptHead ? 'border-amber-300 ring-1 ring-amber-200' : 'border-gray-200',
+      !emp.is_active && 'opacity-50',
+    )}>
+      <div className="flex items-start gap-3">
+        <div className="relative shrink-0">
+          <div className="w-10 h-10 rounded-full bg-indigo-100 text-indigo-700 font-bold text-sm flex items-center justify-center">
+            {getInitials(`${emp.first_name} ${emp.last_name}`)}
+          </div>
+          {isDeptHead && (
+            <span className="absolute -top-1 -right-1 w-4 h-4 bg-amber-400 rounded-full flex items-center justify-center" title="Department Head">
+              <Shield size={9} className="text-white" />
+            </span>
+          )}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <p className="font-semibold text-gray-900 text-sm truncate">{emp.first_name} {emp.last_name}</p>
+            {isDeptHead && (
+              <span className="text-[9px] font-bold uppercase tracking-wide text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-full shrink-0">Head</span>
+            )}
+          </div>
+          {emp.job_title && <p className="text-xs text-gray-500 truncate">{emp.job_title}</p>}
+          <p className="text-xs text-gray-400 truncate">{emp.email}</p>
+        </div>
+        <span className={cn('text-[10px] font-semibold px-2 py-0.5 rounded-full capitalize shrink-0', ROLE_COLOR[emp.role])}>
+          {emp.role}
+        </span>
+      </div>
+      {isManager && (
+        <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between">
+          <p className="text-xs text-gray-400">Joined {formatDate(emp.created_at)}</p>
+          <button onClick={() => setExpanded((v) => !v)} className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1">
+            Actions <ChevronDown size={11} className={cn('transition-transform', expanded && 'rotate-180')} />
+          </button>
+        </div>
+      )}
+      {expanded && isManager && emp.is_active && (
+        <button
+          onClick={() => { if (confirm(`Deactivate ${emp.first_name}?`)) deactivate.mutate(); }}
+          className="mt-2 text-xs text-red-500 hover:text-red-700 text-left px-2 py-1 hover:bg-red-50 rounded-md w-full transition-colors"
+        >
+          Deactivate account
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ─── LEAVE PACKAGES TAB ────────────────────────────────────────────────── */
+function LeavePackagesTab({ isManager }: { isManager: boolean }) {
+  const qc = useQueryClient();
+  const [showCreate, setShowCreate] = useState(false);
+  const [allocatePackage, setAllocatePackage] = useState<LeavePackage | null>(null);
+
+  const { data: packages = [], isLoading } = useQuery<LeavePackage[]>({
+    queryKey: ['leave-packages'],
+    queryFn: leavePackagesApi.list,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => leavePackagesApi.remove(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['leave-packages'] }); toast.success('Package deleted'); },
+  });
+
+  if (isLoading) return <Spinner />;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-gray-500">{packages.length} package{packages.length !== 1 ? 's' : ''}</p>
+        {isManager && (
+          <button onClick={() => setShowCreate(true)} className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors">
+            <Plus size={15} /> New Package
+          </button>
+        )}
+      </div>
+
+      {packages.length === 0 ? (
+        <div className="bg-white rounded-xl border border-dashed border-gray-300 p-14 text-center">
+          <Package size={32} className="text-gray-300 mx-auto mb-3" />
+          <p className="text-gray-500 font-medium mb-1">No leave packages yet</p>
+          <p className="text-sm text-gray-400">Create a package to define leave entitlements for employees.</p>
+        </div>
+      ) : (
+        <div className="grid gap-4">
+          {packages.map((pkg) => (
+            <div key={pkg.id} className="bg-white rounded-xl border border-gray-200 p-5">
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap mb-1">
+                    <p className="font-semibold text-gray-900">{pkg.name}</p>
+                    <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full flex items-center gap-1">
+                      <CalendarDays size={10} />
+                      {formatDate(pkg.period_start)} → {formatDate(pkg.period_end)}
+                    </span>
+                    <span className="text-xs text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">
+                      {pkg.employee_count ?? 0} employee{(pkg.employee_count ?? 0) !== 1 ? 's' : ''} allocated
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-400 mb-3">Created by {pkg.created_by_name}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {(pkg.types ?? []).map((t) => (
+                      <div key={t.id} className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg">
+                        <span className="text-xs capitalize text-gray-600">{t.leave_type}</span>
+                        <span className="text-xs font-bold text-gray-900">{t.days_allowed}d</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                {isManager && (
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => setAllocatePackage(pkg)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-primary-600 border border-primary-200 hover:bg-primary-50 rounded-lg transition-colors"
+                    >
+                      <Users size={14} /> Allocate
+                    </button>
+                    <button
+                      onClick={() => { if (confirm(`Delete "${pkg.name}"?`)) deleteMutation.mutate(pkg.id); }}
+                      className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showCreate && <PackageFormModal onClose={() => setShowCreate(false)} />}
+      {allocatePackage && <AllocateModal pkg={allocatePackage} onClose={() => setAllocatePackage(null)} />}
+    </div>
+  );
+}
+
+function PackageFormModal({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const [name, setName] = useState('');
+  const [periodStart, setPeriodStart] = useState('');
+  const [periodEnd, setPeriodEnd] = useState('');
+  const [types, setTypes] = useState<{ leave_type: string; days_allowed: number }[]>(
+    LEAVE_TYPES.slice(0, 3).map((t) => ({ leave_type: t, days_allowed: t === 'annual' ? 21 : t === 'sick' ? 10 : 3 }))
+  );
+
+  const createMutation = useMutation({
+    mutationFn: () => leavePackagesApi.create({ name, period_start: periodStart, period_end: periodEnd, types: types.filter((t) => t.days_allowed > 0) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['leave-packages'] }); toast.success('Package created'); onClose(); },
+    onError: () => toast.error('Failed to create package'),
+  });
+
+  const addType = () => {
+    const available = LEAVE_TYPES.filter((t) => !types.find((x) => x.leave_type === t));
+    if (available.length) setTypes([...types, { leave_type: available[0], days_allowed: 0 }]);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <h2 className="text-lg font-bold mb-5">New Leave Package</h2>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Package name *</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. 2026 Annual Package"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Period start *</label>
+              <input type="date" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Period end *</label>
+              <input type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none" />
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-medium text-gray-600">Leave types & allocations</label>
+              <button onClick={addType} className="text-xs text-primary-600 hover:text-primary-700 flex items-center gap-1">
+                <Plus size={12} /> Add type
+              </button>
+            </div>
+            <div className="space-y-2">
+              {types.map((t, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <select value={t.leave_type} onChange={(e) => { const n = [...types]; n[i] = { ...n[i], leave_type: e.target.value }; setTypes(n); }}
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm capitalize focus:outline-none">
+                    {LEAVE_TYPES.map((lt) => <option key={lt} value={lt}>{lt.charAt(0).toUpperCase() + lt.slice(1)}</option>)}
+                  </select>
+                  <div className="flex items-center gap-1">
+                    <input type="number" min={0} value={t.days_allowed}
+                      onChange={(e) => { const n = [...types]; n[i] = { ...n[i], days_allowed: Number(e.target.value) }; setTypes(n); }}
+                      className="w-20 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none text-center" />
+                    <span className="text-xs text-gray-400">days</span>
+                  </div>
+                  <button onClick={() => setTypes(types.filter((_, j) => j !== i))} className="p-1.5 text-gray-400 hover:text-red-500 rounded-md">
+                    <X size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-2 mt-6">
+          <button onClick={onClose} className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm">Cancel</button>
+          <button
+            onClick={() => createMutation.mutate()}
+            disabled={!name || !periodStart || !periodEnd || types.length === 0 || createMutation.isPending}
+            className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-primary-700"
+          >
+            {createMutation.isPending ? 'Creating…' : 'Create Package'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AllocateModal({ pkg, onClose }: { pkg: LeavePackage; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectAll, setSelectAll] = useState(false);
+
+  const { data: employees = [] } = useQuery({ queryKey: ['employees'], queryFn: usersApi.list });
+  const activeEmployees = (employees as any[]).filter((e) => e.is_active);
+
+  const allocateMutation = useMutation({
+    mutationFn: () => leavePackagesApi.allocate(pkg.id, selectAll ? 'all' : Array.from(selected)),
+    onSuccess: (res: any) => {
+      qc.invalidateQueries({ queryKey: ['leave-packages'] });
+      toast.success(`Package allocated to ${res.allocated} employee${res.allocated !== 1 ? 's' : ''}`);
+      onClose();
+    },
+    onError: () => toast.error('Failed to allocate'),
+  });
+
+  const toggleAll = (v: boolean) => {
+    setSelectAll(v);
+    setSelected(v ? new Set(activeEmployees.map((e: any) => e.id)) : new Set());
+  };
+
+  const toggle = (id: string) => {
+    const n = new Set(selected);
+    if (n.has(id)) n.delete(id); else n.add(id);
+    setSelected(n);
+    setSelectAll(n.size === activeEmployees.length);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md">
+        <h2 className="text-lg font-bold mb-1">Allocate Package</h2>
+        <p className="text-sm text-gray-500 mb-4">{pkg.name} · {formatDate(pkg.period_start)} → {formatDate(pkg.period_end)}</p>
+
+        <div className="border border-gray-200 rounded-xl overflow-hidden mb-4">
+          {/* Select all row */}
+          <label className="flex items-center gap-3 px-4 py-3 bg-gray-50 border-b border-gray-200 cursor-pointer hover:bg-gray-100">
+            <input type="checkbox" checked={selectAll} onChange={(e) => toggleAll(e.target.checked)} className="rounded" />
+            <span className="text-sm font-semibold text-gray-700">All employees ({activeEmployees.length})</span>
+          </label>
+          <div className="max-h-64 overflow-y-auto divide-y divide-gray-100">
+            {activeEmployees.map((emp: any) => (
+              <label key={emp.id} className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-gray-50">
+                <input type="checkbox" checked={selected.has(emp.id)} onChange={() => toggle(emp.id)} className="rounded" />
+                <div className="w-7 h-7 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold flex items-center justify-center shrink-0">
+                  {(emp.first_name?.[0] ?? '') + (emp.last_name?.[0] ?? '')}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-gray-900 truncate">{emp.first_name} {emp.last_name}</p>
+                  <p className="text-xs text-gray-400 truncate">{emp.department_name ?? 'No dept.'}</p>
+                </div>
+              </label>
+            ))}
+            {activeEmployees.length === 0 && <p className="px-4 py-6 text-sm text-gray-400 text-center">No active employees.</p>}
+          </div>
+        </div>
+
+        {selected.size > 0 && (
+          <p className="text-xs text-gray-500 mb-3">
+            {selected.size === activeEmployees.length ? 'All employees' : `${selected.size} employee${selected.size !== 1 ? 's' : ''}`} selected
+          </p>
+        )}
+
+        <div className="flex gap-2">
+          <button onClick={onClose} className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm">Cancel</button>
+          <button
+            onClick={() => allocateMutation.mutate()}
+            disabled={selected.size === 0 || allocateMutation.isPending}
+            className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-primary-700"
+          >
+            {allocateMutation.isPending ? 'Allocating…' : `Allocate to ${selected.size}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── PERFORMANCE TAB ───────────────────────────────────────────────────── */
+function PerformanceTab({ user }: { user: any }) {
+  const qc = useQueryClient();
+  const [showCreate, setShowCreate] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState({ reviewee_id: '', period: '', score: '', feedback: '', goals: '' });
+
+  const { data: reviews = [], isLoading } = useQuery<PerformanceReview[]>({ queryKey: ['performance'], queryFn: performanceApi.list });
+  const { data: employees = [] } = useQuery({ queryKey: ['employees'], queryFn: usersApi.list });
+
+  const createMutation = useMutation({
+    mutationFn: () => performanceApi.create({ ...form, score: form.score ? Number(form.score) : undefined }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['performance'] }); toast.success('Review created'); setShowCreate(false); setForm({ reviewee_id: '', period: '', score: '', feedback: '', goals: '' }); },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: (data: any) => performanceApi.update(editingId!, data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['performance'] }); toast.success('Review updated'); setEditingId(null); },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => performanceApi.remove(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['performance'] }); toast.success('Review deleted'); },
+  });
+
+  if (isLoading) return <Spinner />;
+
+  const otherEmployees = (employees as any[]).filter((e) => e.id !== user?.id);
+  const REVIEW_STATUS: Record<string, string> = { draft: 'bg-gray-100 text-gray-600', submitted: 'bg-blue-100 text-blue-700', acknowledged: 'bg-green-100 text-green-700' };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-gray-500">{reviews.length} review{reviews.length !== 1 ? 's' : ''}</p>
+        <button onClick={() => setShowCreate(true)} className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 transition-colors">
+          <Plus size={15} /> New Review
+        </button>
+      </div>
+
+      {reviews.length === 0 ? (
+        <div className="bg-white rounded-xl border border-dashed border-gray-300 p-14 text-center">
+          <Star size={32} className="text-gray-300 mx-auto mb-3" />
+          <p className="text-gray-500 font-medium mb-1">No performance reviews yet</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {reviews.map((r) => {
+            const isReviewer = r.reviewer_id === user?.id;
+            const isReviewee = r.reviewee_id === user?.id;
+            return (
+              <div key={r.id} className="bg-white rounded-xl border border-gray-200 p-5">
+                <div className="flex items-start justify-between gap-4 flex-wrap">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      <span className="font-semibold text-gray-900 text-sm">{r.reviewee_name}</span>
+                      <span className="text-gray-400">·</span>
+                      <span className="text-sm text-gray-500">{r.period}</span>
+                      <span className={cn('text-[11px] font-semibold px-2 py-0.5 rounded-full capitalize', REVIEW_STATUS[r.status])}>{r.status}</span>
+                    </div>
+                    <p className="text-xs text-gray-400">Reviewer: <span className="font-medium text-gray-600">{r.reviewer_name}</span></p>
+                    {r.score != null && (
+                      <div className="flex items-center gap-1 mt-2">
+                        {Array.from({ length: 5 }).map((_, i) => (
+                          <Star key={i} size={14} className={i < (r.score ?? 0) ? 'text-amber-400 fill-amber-400' : 'text-gray-200 fill-gray-200'} />
+                        ))}
+                        <span className="text-xs text-gray-500 ml-1">{r.score}/5</span>
+                      </div>
+                    )}
+                    {r.feedback && <p className="text-sm text-gray-600 mt-2 line-clamp-2">{r.feedback}</p>}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                    {isReviewer && r.status === 'draft' && (
+                      <>
+                        <button onClick={() => { setEditingId(r.id); setForm({ reviewee_id: r.reviewee_id, period: r.period, score: r.score?.toString() ?? '', feedback: r.feedback ?? '', goals: r.goals ?? '' }); }} className="text-xs text-gray-500 hover:text-gray-700 px-3 py-1.5 border border-gray-200 rounded-lg hover:bg-gray-50">Edit</button>
+                        <button onClick={() => updateMutation.mutate({ status: 'submitted' })} className="text-xs font-medium text-white bg-primary-600 hover:bg-primary-700 px-3 py-1.5 rounded-lg">Submit</button>
+                        <button onClick={() => { if (confirm('Delete?')) deleteMutation.mutate(r.id); }} className="text-xs text-red-400 hover:text-red-600 px-2 py-1.5 hover:bg-red-50 rounded-lg">Delete</button>
+                      </>
+                    )}
+                    {isReviewee && r.status === 'submitted' && (
+                      <button onClick={() => updateMutation.mutate({ status: 'acknowledged' })} className="text-xs font-medium text-white bg-green-600 hover:bg-green-700 px-3 py-1.5 rounded-lg">Acknowledge</button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {(showCreate || editingId) && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-lg">
+            <h2 className="text-lg font-bold mb-5">{showCreate ? 'New Review' : 'Edit Review'}</h2>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Employee *</label>
+                <select value={form.reviewee_id} onChange={(e) => setForm({ ...form, reviewee_id: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500">
+                  <option value="">Select employee…</option>
+                  {otherEmployees.map((e) => <option key={e.id} value={e.id}>{e.first_name} {e.last_name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Period * (e.g. Q2 2026)</label>
+                <input value={form.period} onChange={(e) => setForm({ ...form, period: e.target.value })} placeholder="Q2 2026" className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Score (1–5)</label>
+                <select value={form.score} onChange={(e) => setForm({ ...form, score: e.target.value })} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+                  <option value="">No score yet</option>
+                  {[1,2,3,4,5].map((n) => <option key={n} value={n}>{'★'.repeat(n)} ({n}/5)</option>)}
+                </select>
+              </div>
+              <textarea value={form.feedback} onChange={(e) => setForm({ ...form, feedback: e.target.value })} placeholder="Feedback…" rows={3} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary-500" />
+              <textarea value={form.goals} onChange={(e) => setForm({ ...form, goals: e.target.value })} placeholder="Goals for next period…" rows={2} className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary-500" />
+            </div>
+            <div className="flex gap-2 mt-6">
+              <button onClick={() => { setShowCreate(false); setEditingId(null); }} className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm">Cancel</button>
+              <button
+                onClick={() => showCreate ? createMutation.mutate() : updateMutation.mutate(form)}
+                disabled={!form.reviewee_id || !form.period || createMutation.isPending || updateMutation.isPending}
+                className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-primary-700"
+              >
+                {createMutation.isPending || updateMutation.isPending ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Spinner() {
+  return (
+    <div className="flex items-center justify-center h-40">
+      <div className="w-6 h-6 border-2 border-primary-600 border-t-transparent rounded-full animate-spin" />
+    </div>
+  );
+}

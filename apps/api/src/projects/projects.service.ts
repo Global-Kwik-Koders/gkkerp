@@ -1,0 +1,104 @@
+import { Injectable, Inject, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Knex } from 'knex';
+import { KNEX_CONNECTION } from '../database/database.module';
+import { v4 as uuid } from 'uuid';
+
+@Injectable()
+export class ProjectsService {
+  constructor(@Inject(KNEX_CONNECTION) private readonly knex: Knex) {}
+
+  async findAll(companyId: string, userId: string) {
+    return this.knex('projects as p')
+      .join('project_members as pm', 'p.id', 'pm.project_id')
+      .where('p.company_id', companyId)
+      .andWhere('pm.user_id', userId)
+      .select('p.*', 'pm.role as member_role');
+  }
+
+  async findById(id: string, companyId: string) {
+    const project = await this.knex('projects').where({ id, company_id: companyId }).first();
+    if (!project) throw new NotFoundException('Project not found');
+    const members = await this.knex('project_members as pm')
+      .join('users as u', 'pm.user_id', 'u.id')
+      .where('pm.project_id', id)
+      .select('u.id', 'u.first_name', 'u.last_name', 'u.email', 'u.avatar_url', 'pm.role');
+    return { ...project, members };
+  }
+
+  async create(companyId: string, ownerId: string, data: { name: string; description?: string; color?: string; icon?: string }) {
+    const id = uuid();
+    await this.knex('projects').insert({ id, company_id: companyId, owner_id: ownerId, ...data });
+    await this.knex('project_members').insert({ id: uuid(), project_id: id, user_id: ownerId, role: 'owner' });
+    return this.findById(id, companyId);
+  }
+
+  async update(id: string, data: Partial<{ name: string; description: string; status: string; color: string; icon: string }>) {
+    await this.knex('projects').where({ id }).update({ ...data, updated_at: new Date() });
+    return this.knex('projects').where({ id }).first();
+  }
+
+  async addMember(projectId: string, userId: string, role = 'member') {
+    await this.knex('project_members')
+      .insert({ id: uuid(), project_id: projectId, user_id: userId, role })
+      .onConflict(['project_id', 'user_id'])
+      .merge({ role });
+  }
+
+  async removeMember(projectId: string, userId: string) {
+    await this.knex('project_members').where({ project_id: projectId, user_id: userId }).delete();
+  }
+
+  remove(id: string, companyId: string) {
+    return this.knex('projects').where({ id, company_id: companyId }).delete();
+  }
+
+  async analytics(id: string) {
+    const [issues, sprints] = await Promise.all([
+      this.knex('issues').where({ project_id: id }).select('status', 'story_points', 'priority', 'type', 'sprint_id', 'created_at'),
+      this.knex('sprints').where({ project_id: id }).orderBy('created_at', 'asc'),
+    ]);
+
+    // Issue breakdown by status
+    const byStatus = issues.reduce<Record<string, number>>((acc, i) => {
+      acc[i.status] = (acc[i.status] ?? 0) + 1;
+      return acc;
+    }, {});
+
+    // Issue breakdown by priority
+    const byPriority = issues.reduce<Record<string, number>>((acc, i) => {
+      acc[i.priority] = (acc[i.priority] ?? 0) + 1;
+      return acc;
+    }, {});
+
+    // Issue breakdown by type
+    const byType = issues.reduce<Record<string, number>>((acc, i) => {
+      acc[i.type] = (acc[i.type] ?? 0) + 1;
+      return acc;
+    }, {});
+
+    // Sprint velocity: points completed per sprint
+    const velocity = sprints.map((s) => {
+      const sprintIssues = issues.filter((i) => i.sprint_id === s.id);
+      const completed = sprintIssues.filter((i) => i.status === 'done').reduce((sum, i) => sum + (i.story_points ?? 0), 0);
+      const total = sprintIssues.reduce((sum, i) => sum + (i.story_points ?? 0), 0);
+      return { sprint: s.name, completed, total, status: s.status };
+    });
+
+    // Health score: % done out of total (0–100)
+    const total = issues.length;
+    const done = issues.filter((i) => i.status === 'done').length;
+    const health = total === 0 ? 100 : Math.round((done / total) * 100);
+
+    return {
+      total,
+      done,
+      inProgress: issues.filter((i) => i.status === 'in_progress').length,
+      byStatus,
+      byPriority,
+      byType,
+      velocity,
+      health,
+      sprintCount: sprints.length,
+    };
+  }
+}
