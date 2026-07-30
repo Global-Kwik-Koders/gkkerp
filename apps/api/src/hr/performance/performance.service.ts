@@ -122,6 +122,43 @@ export class PerformanceService {
     return this.findById(id);
   }
 
+  async contributions(
+    companyId: string,
+    userId: string,
+    filters: { date_from?: string; date_to?: string } = {},
+  ) {
+    const q = this.knex('issues as i')
+      .where('i.assignee_id', userId)
+      .join('projects as p', 'i.project_id', 'p.id')
+      .where('p.company_id', companyId)
+      .leftJoin('sprints as s', 'i.sprint_id', 's.id')
+      .select(
+        'i.id', 'i.title', 'i.status', 'i.type', 'i.priority',
+        'i.story_points', 'i.due_date', 'i.created_at', 'i.updated_at',
+        'p.name as project_name', 'p.icon as project_icon',
+        's.name as sprint_name',
+      )
+      .orderBy('i.updated_at', 'desc');
+
+    if (filters.date_from) q.where('i.created_at', '>=', filters.date_from);
+    if (filters.date_to)   q.where('i.created_at', '<=', filters.date_to + ' 23:59:59');
+
+    const issues = await q;
+
+    const summary = {
+      total:                   issues.length,
+      done:                    issues.filter((i) => i.status === 'done').length,
+      in_progress:             issues.filter((i) => i.status === 'in_progress' || i.status === 'in_review').length,
+      todo:                    issues.filter((i) => i.status === 'todo').length,
+      backlog:                 issues.filter((i) => i.status === 'backlog').length,
+      story_points_completed:  issues.filter((i) => i.status === 'done').reduce((s, i) => s + (i.story_points ?? 0), 0),
+      story_points_total:      issues.reduce((s, i) => s + (i.story_points ?? 0), 0),
+      by_type: issues.reduce<Record<string, number>>((acc, i) => { acc[i.type] = (acc[i.type] ?? 0) + 1; return acc; }, {}),
+    };
+
+    return { summary, issues };
+  }
+
   remove(id: string) {
     return this.knex('performance_reviews').where({ id }).delete();
   }

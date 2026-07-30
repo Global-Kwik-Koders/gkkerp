@@ -138,6 +138,8 @@ export const performanceApi = {
   create: (data: any) => api.post('/hr/performance', data).then((r) => r.data),
   update: (id: string, data: any) => api.patch(`/hr/performance/${id}`, data).then((r) => r.data),
   remove: (id: string) => api.delete(`/hr/performance/${id}`).then((r) => r.data),
+  contributions: (userId: string, params?: { date_from?: string; date_to?: string }) =>
+    api.get(`/hr/performance/contributions/${userId}`, { params }).then((r) => r.data),
 };
 
 // Notifications

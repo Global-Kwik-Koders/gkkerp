@@ -34,6 +34,16 @@ export class PerformanceController {
     return this.svc.update(id, user.id, body);
   }
 
+  @Get('contributions/:userId')
+  contributions(
+    @CurrentUser() user: any,
+    @Param('userId') userId: string,
+    @Query('date_from') date_from?: string,
+    @Query('date_to') date_to?: string,
+  ) {
+    return this.svc.contributions(user.company_id, userId, { date_from, date_to });
+  }
+
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.svc.remove(id);

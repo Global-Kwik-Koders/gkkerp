@@ -1099,11 +1099,19 @@ function PerformanceTab({ user }: { user: any }) {
                     {isManager && (
                       <button
                         onClick={() => { setShowCreate(true); setForm((f) => ({ ...f, reviewee_id: emp.id })); }}
-                        className="w-full flex items-center gap-2 px-5 py-3 text-xs text-indigo-600 hover:bg-indigo-50 transition-colors font-medium"
+                        className="w-full flex items-center gap-2 px-5 py-3 text-xs text-indigo-600 hover:bg-indigo-50 transition-colors font-medium border-t border-gray-50"
                       >
                         <Plus size={13} /> Add review for {emp.name.split(' ')[0]}
                       </button>
                     )}
+
+                    {/* Task contributions */}
+                    <ContributionsSection
+                      employeeId={emp.id}
+                      employeeName={emp.name}
+                      dateFrom={dateFrom}
+                      dateTo={dateTo}
+                    />
                   </div>
                 )}
               </div>
@@ -1203,6 +1211,159 @@ function PerformanceTab({ user }: { user: any }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ─── CONTRIBUTIONS SECTION ────────────────────────────────────────────── */
+const STATUS_COLOR_MAP: Record<string, string> = {
+  done:        'text-green-600 bg-green-50',
+  in_progress: 'text-amber-600 bg-amber-50',
+  in_review:   'text-purple-600 bg-purple-50',
+  todo:        'text-blue-600 bg-blue-50',
+  backlog:     'text-gray-500 bg-gray-100',
+};
+const STATUS_LABEL: Record<string, string> = {
+  done: 'Done', in_progress: 'In Progress', in_review: 'In Review', todo: 'To Do', backlog: 'Backlog',
+};
+const TYPE_COLOR_MAP: Record<string, string> = {
+  bug: 'text-red-500', task: 'text-blue-500', story: 'text-green-500', epic: 'text-purple-500',
+};
+
+function ContributionsSection({
+  employeeId,
+  employeeName,
+  dateFrom,
+  dateTo,
+}: {
+  employeeId: string;
+  employeeName: string;
+  dateFrom: string;
+  dateTo: string;
+}) {
+  const [showAll, setShowAll] = useState(false);
+
+  const { data, isLoading } = useQuery<{ summary: any; issues: any[] }>({
+    queryKey: ['contributions', employeeId, dateFrom, dateTo],
+    queryFn: () => performanceApi.contributions(employeeId, {
+      date_from: dateFrom || undefined,
+      date_to:   dateTo   || undefined,
+    }),
+  });
+
+  const summary = data?.summary;
+  const issues  = data?.issues ?? [];
+  const visible = showAll ? issues : issues.slice(0, 5);
+
+  const completionPct = summary?.story_points_total
+    ? Math.round((summary.story_points_completed / summary.story_points_total) * 100)
+    : summary?.total
+    ? Math.round((summary.done / summary.total) * 100)
+    : 0;
+
+  return (
+    <div className="border-t border-gray-100 bg-gray-50/60">
+      <div className="px-5 py-4">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+          <Briefcase size={12} /> Task Contributions
+        </p>
+
+        {isLoading ? (
+          <div className="flex items-center gap-2 text-xs text-gray-400 py-2">
+            <div className="w-3.5 h-3.5 border-2 border-gray-300 border-t-transparent rounded-full animate-spin" />
+            Loading…
+          </div>
+        ) : summary?.total === 0 ? (
+          <p className="text-xs text-gray-400 py-2 italic">No tasks assigned{dateFrom || dateTo ? ' in this period' : ''}.</p>
+        ) : (
+          <>
+            {/* Stats row */}
+            <div className="grid grid-cols-4 gap-2 mb-4">
+              {[
+                { label: 'Total', value: summary?.total ?? 0, cls: 'text-gray-700 bg-white' },
+                { label: 'Done', value: summary?.done ?? 0, cls: 'text-green-700 bg-green-50' },
+                { label: 'In Progress', value: summary?.in_progress ?? 0, cls: 'text-amber-700 bg-amber-50' },
+                { label: 'Points', value: summary?.story_points_total ? `${summary.story_points_completed}/${summary.story_points_total}` : (summary?.story_points_completed ?? 0), cls: 'text-indigo-700 bg-indigo-50' },
+              ].map(({ label, value, cls }) => (
+                <div key={label} className={cn('rounded-lg px-3 py-2 border border-gray-100 text-center', cls)}>
+                  <p className="text-base font-bold">{value}</p>
+                  <p className="text-[10px] font-medium mt-0.5 opacity-70">{label}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Progress bar */}
+            {summary?.total > 0 && (
+              <div className="mb-4">
+                <div className="flex items-center justify-between text-[11px] text-gray-400 mb-1">
+                  <span>Completion rate</span>
+                  <span className="font-semibold text-gray-600">{completionPct}%</span>
+                </div>
+                <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-green-500 rounded-full transition-all"
+                    style={{ width: `${completionPct}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Issue list */}
+            <div className="space-y-1.5">
+              {visible.map((issue: any) => (
+                <div key={issue.id} className="flex items-center gap-2.5 bg-white rounded-lg border border-gray-100 px-3 py-2">
+                  {/* Type dot */}
+                  <span className={cn('shrink-0 text-[11px] font-bold uppercase', TYPE_COLOR_MAP[issue.type])}>
+                    {issue.type[0].toUpperCase()}
+                  </span>
+
+                  {/* Title */}
+                  <p className={cn(
+                    'flex-1 text-xs text-gray-800 truncate',
+                    issue.status === 'done' && 'line-through text-gray-400',
+                  )}>
+                    {issue.title}
+                  </p>
+
+                  {/* Project */}
+                  <span className="text-[10px] text-gray-400 shrink-0 hidden sm:block">
+                    {issue.project_icon} {issue.project_name}
+                  </span>
+
+                  {/* Sprint */}
+                  {issue.sprint_name && (
+                    <span className="text-[10px] text-gray-400 shrink-0 hidden md:block">{issue.sprint_name}</span>
+                  )}
+
+                  {/* Story points */}
+                  {issue.story_points != null && (
+                    <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded shrink-0">
+                      {issue.story_points}pt
+                    </span>
+                  )}
+
+                  {/* Status badge */}
+                  <span className={cn(
+                    'text-[10px] font-semibold px-1.5 py-0.5 rounded capitalize shrink-0',
+                    STATUS_COLOR_MAP[issue.status],
+                  )}>
+                    {STATUS_LABEL[issue.status]}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {issues.length > 5 && (
+              <button
+                onClick={() => setShowAll((v) => !v)}
+                className="mt-2 w-full text-xs text-indigo-600 hover:text-indigo-700 font-medium py-1.5 hover:bg-indigo-50 rounded-lg transition-colors"
+              >
+                {showAll ? 'Show less' : `Show ${issues.length - 5} more tasks`}
+              </button>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
