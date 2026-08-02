@@ -2,9 +2,9 @@
   "name": "@gkkerp/api",
   "version": "0.0.1",
   "scripts": {
-    "build": "nest build",
-    "dev": "nodemon",
-    "start": "node dist/main",
+    "build": "node init && nest build",
+    "dev": "node init && nodemon",
+    "start": "node init && node dist/main",
     "migrate": "knex migrate:latest --knexfile src/database/knexfile.ts",
     "migrate:make": "knex migrate:make --knexfile src/database/knexfile.ts",
     "migrate:rollback": "knex migrate:rollback --knexfile src/database/knexfile.ts",
