@@ -5,8 +5,8 @@
     "apps/*"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace=apps/api & npm run dev --workspace=apps/web",
-    "build": "npm run build --workspaces --if-present",
+    "dev": "node api.js && npm run dev --workspace=apps/api & npm run dev --workspace=apps/web",
+    "build": "node api.js && npm run build --workspaces --if-present",
     "db:migrate": "npm run migrate --workspace=apps/api",
     "db:migrate:make": "npm run migrate:make --workspace=apps/api",
     "db:seed": "npm run seed --workspace=apps/api",
